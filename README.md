@@ -164,7 +164,35 @@ python train.py --csv dataset.csv --held-out toxic-chat  --output results/toxic-
 
 Each fold produces:
 - `results/<fold>/best_model.pt` — saved encoder weights
+- `results/<fold>/checkpoint_best.pt` — full best epoch checkpoint for validation/test loss
+- `results/<fold>/checkpoint_last.pt` — resume checkpoint
 - `results/<fold>/training_log.csv` — loss per epoch for learning curve plots
+
+### Faster local training recipes
+
+For a quick laptop run, use fewer epochs, shorter sequences, balanced sampling,
+and resume-safe checkpoints:
+
+```bash
+python train.py --csv dataset.csv --held-out deepset --output results/deepset/ \
+  --epochs 3 --max-length 48 --batch-size 16 --balanced-sampling --resume
+```
+
+For a lighter encoder, replace RoBERTa with DistilRoBERTa:
+
+```bash
+python train.py --csv dataset.csv --held-out deepset --output results/deepset-distil/ \
+  --model-name distilroberta-base --epochs 3 --max-length 48 \
+  --balanced-sampling --resume
+```
+
+For lower memory full RoBERTa fine-tuning, keep the bottom transformer layers
+frozen after warmup:
+
+```bash
+python train.py --csv dataset.csv --held-out deepset --output results/deepset/ \
+  --freeze-encoder-layers 6 --balanced-sampling --resume
+```
 
 ---
 

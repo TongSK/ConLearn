@@ -28,7 +28,7 @@ Usage:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import RobertaModel
+from transformers import AutoModel
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ from transformers import RobertaModel
 
 class PromptInjectionModel(nn.Module):
     """
-    RoBERTa encoder with a two-layer projection head.
+    Transformer encoder with a two-layer projection head.
 
     forward() returns L2-normalised 128-dim embeddings — ready for SupConLoss.
     get_embeddings() returns raw 768-dim [CLS] embeddings — used at inference.
@@ -48,15 +48,19 @@ class PromptInjectionModel(nn.Module):
         encoder_name: str = "roberta-base",
         projection_dim: int = 128,
         freeze_encoder: bool = True,
+        freeze_encoder_layers: int = 0,
     ):
         super().__init__()
 
-        self.encoder = RobertaModel.from_pretrained(encoder_name)
+        self.encoder = AutoModel.from_pretrained(encoder_name)
+        self.freeze_encoder_layers = freeze_encoder_layers
 
         # Freeze encoder weights for epoch 1 — unfreeze in train loop after warmup
         if freeze_encoder:
             for param in self.encoder.parameters():
                 param.requires_grad = False
+        elif freeze_encoder_layers > 0:
+            self.freeze_bottom_encoder_layers(freeze_encoder_layers)
 
         encoder_hidden = self.encoder.config.hidden_size  # 768 for roberta-base
 
@@ -97,6 +101,27 @@ class PromptInjectionModel(nn.Module):
         """Call after warmup epoch to allow encoder fine-tuning."""
         for param in self.encoder.parameters():
             param.requires_grad = True
+        if self.freeze_encoder_layers > 0:
+            self.freeze_bottom_encoder_layers(self.freeze_encoder_layers)
+
+    def freeze_bottom_encoder_layers(self, n_layers: int):
+        """
+        Keeps embeddings and the first n transformer blocks frozen.
+
+        This reduces gradient memory/time while still fine-tuning higher-level
+        layers. It works for RoBERTa/BERT-style encoders exposed by AutoModel.
+        """
+        if hasattr(self.encoder, "embeddings"):
+            for param in self.encoder.embeddings.parameters():
+                param.requires_grad = False
+
+        layer_stack = getattr(getattr(self.encoder, "encoder", None), "layer", None)
+        if layer_stack is None:
+            return
+
+        for layer in layer_stack[:n_layers]:
+            for param in layer.parameters():
+                param.requires_grad = False
 
     def _encode(
         self,

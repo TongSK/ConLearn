@@ -42,6 +42,7 @@ from model import PromptInjectionModel, SupConLoss
 # ---------------------------------------------------------------------------
 
 EPOCHS          = 10
+MODEL_NAME      = "roberta-base"
 LR_PROJECTION   = 1e-4   # projection head — higher LR, trained from scratch
 LR_ENCODER      = 2e-5   # encoder — lower LR, pre-trained weights
 WARMUP_STEPS    = 100    # linear warmup steps for scheduler
@@ -50,6 +51,8 @@ PATIENCE        = 3      # early stopping: stop if val loss does not improve
 BATCH_SIZE      = 16
 MAX_LENGTH      = 64
 VAL_FRACTION    = 0.10
+FREEZE_ENCODER_EPOCHS = 1
+FREEZE_ENCODER_LAYERS = 0
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +136,7 @@ def save_checkpoint(
     epoch,
     best_val_loss,
     patience_count,
+    config,
 ):
     torch.save(
         {
@@ -142,6 +146,7 @@ def save_checkpoint(
             "scheduler_state": scheduler.state_dict(),
             "best_val_loss": best_val_loss,
             "patience_count": patience_count,
+            "config": config,
         },
         path,
     )
@@ -155,6 +160,10 @@ def train(
     batch_size: int = BATCH_SIZE,
     max_length: int = MAX_LENGTH,
     val_fraction: float = VAL_FRACTION,
+    model_name: str = MODEL_NAME,
+    freeze_encoder_epochs: int = FREEZE_ENCODER_EPOCHS,
+    freeze_encoder_layers: int = FREEZE_ENCODER_LAYERS,
+    balanced_sampling: bool = False,
     resume: bool = False,
 ):
     os.makedirs(output_dir, exist_ok=True)
@@ -162,6 +171,7 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n=== Training — held out: '{held_out_source}' ===")
     print(f"Device : {device}")
+    print(f"Encoder: {model_name}")
     print(f"Output : {output_dir}\n")
 
     # ── Data ──────────────────────────────────────────────────────────────
@@ -171,10 +181,16 @@ def train(
         batch_size=batch_size,
         max_length=max_length,
         val_fraction=val_fraction,
+        model_name=model_name,
+        balanced_sampling=balanced_sampling,
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    model   = PromptInjectionModel(freeze_encoder=True).to(device)
+    model   = PromptInjectionModel(
+        encoder_name=model_name,
+        freeze_encoder=freeze_encoder_epochs > 0,
+        freeze_encoder_layers=freeze_encoder_layers,
+    ).to(device)
     loss_fn = SupConLoss(temperature=TEMPERATURE)
 
     # Two param groups so encoder and projection head have different LRs
@@ -196,9 +212,20 @@ def train(
     best_val_loss  = float("inf")
     patience_count = 0
     best_model_path = os.path.join(output_dir, "best_model.pt")
+    best_checkpoint_path = os.path.join(output_dir, "checkpoint_best.pt")
     last_checkpoint_path = os.path.join(output_dir, "checkpoint_last.pt")
     start_epoch = 1
     scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+    run_config = {
+        "model_name": model_name,
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "max_length": max_length,
+        "val_fraction": val_fraction,
+        "freeze_encoder_epochs": freeze_encoder_epochs,
+        "freeze_encoder_layers": freeze_encoder_layers,
+        "balanced_sampling": balanced_sampling,
+    }
 
     if resume and os.path.exists(last_checkpoint_path):
         checkpoint = torch.load(last_checkpoint_path, map_location=device)
@@ -208,7 +235,7 @@ def train(
         best_val_loss = checkpoint["best_val_loss"]
         patience_count = checkpoint["patience_count"]
         start_epoch = checkpoint["epoch"] + 1
-        if start_epoch >= 2:
+        if start_epoch > freeze_encoder_epochs:
             model.unfreeze_encoder()
         print(f"  Resumed from epoch {checkpoint['epoch']} checkpoint\n")
 
@@ -223,9 +250,9 @@ def train(
     for epoch in range(start_epoch, epochs + 1):
         t0 = time.time()
 
-        # Unfreeze encoder after epoch 1
-        encoder_frozen = (epoch == 1)
-        if epoch == 2:
+        # Unfreeze encoder after the projection-head warmup phase.
+        encoder_frozen = epoch <= freeze_encoder_epochs
+        if freeze_encoder_epochs > 0 and epoch == freeze_encoder_epochs + 1:
             model.unfreeze_encoder()
             print("  Encoder unfrozen — full model now training\n")
 
@@ -239,6 +266,7 @@ def train(
             patience_count = 0
             # Save encoder weights only — projection head is discarded at inference
             torch.save(model.encoder.state_dict(), best_model_path)
+            torch.save(model.state_dict(), best_checkpoint_path)
         else:
             patience_count += 1
 
@@ -263,6 +291,7 @@ def train(
             epoch,
             best_val_loss,
             patience_count,
+            run_config,
         )
 
         # Early stopping
@@ -273,11 +302,12 @@ def train(
     print(f"\nTraining complete.")
     print(f"Best val loss : {best_val_loss:.4f}")
     print(f"Model saved   : {best_model_path}")
+    print(f"Best checkpoint: {best_checkpoint_path}")
     print(f"Resume point  : {last_checkpoint_path}")
     print(f"Log saved     : {log_path}")
 
-    if os.path.exists(best_model_path):
-        model.encoder.load_state_dict(torch.load(best_model_path, map_location=device))
+    if os.path.exists(best_checkpoint_path):
+        model.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
         test_loss = validate(model, test_loader, loss_fn, device, epoch)
         print(f"Held-out test loss ({held_out_source}): {test_loss:.4f}")
 
@@ -302,6 +332,14 @@ if __name__ == "__main__":
                         help="Tokenizer max sequence length")
     parser.add_argument("--val-fraction", type=float, default=VAL_FRACTION,
                         help="Validation fraction taken from non-held-out sources")
+    parser.add_argument("--model-name", default=MODEL_NAME,
+                        help="HuggingFace encoder name, e.g. roberta-base or distilroberta-base")
+    parser.add_argument("--freeze-encoder-epochs", type=int, default=FREEZE_ENCODER_EPOCHS,
+                        help="Number of initial epochs with the full encoder frozen")
+    parser.add_argument("--freeze-encoder-layers", type=int, default=FREEZE_ENCODER_LAYERS,
+                        help="Keep embeddings and the first N encoder layers frozen after warmup")
+    parser.add_argument("--balanced-sampling", action="store_true",
+                        help="Use class-balanced weighted sampling for the training loader")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from output/checkpoint_last.pt if it exists")
     args = parser.parse_args()
@@ -314,5 +352,9 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         max_length=args.max_length,
         val_fraction=args.val_fraction,
+        model_name=args.model_name,
+        freeze_encoder_epochs=args.freeze_encoder_epochs,
+        freeze_encoder_layers=args.freeze_encoder_layers,
+        balanced_sampling=args.balanced_sampling,
         resume=args.resume,
     )

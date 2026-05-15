@@ -27,8 +27,8 @@ Available held_out_source values (must match 'source' column in dataset.csv):
 
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
-from transformers import RobertaTokenizerFast
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from transformers import AutoTokenizer
 
 # ---------------------------------------------------------------------------
 # Constants — change here only, not scattered through the code
@@ -59,7 +59,7 @@ class PromptDataset(Dataset):
     CPU/Windows with 27K+ samples.
     """
 
-    def __init__(self, df: pd.DataFrame, tokenizer: RobertaTokenizerFast, max_length: int = MAX_LENGTH):
+    def __init__(self, df: pd.DataFrame, tokenizer: AutoTokenizer, max_length: int = MAX_LENGTH):
         texts  = df["text"].tolist()
         labels = df["label"].tolist()
 
@@ -156,6 +156,8 @@ def get_lodo_loaders(
     max_length: int = MAX_LENGTH,
     val_fraction: float = VAL_FRACTION,
     seed: int = SEED,
+    model_name: str = MODEL_NAME,
+    balanced_sampling: bool = False,
 ):
     """
     Returns (train_loader, val_loader, test_loader) for one LODO fold.
@@ -198,7 +200,7 @@ def get_lodo_loaders(
           f"({(test_df['label']==0).sum()} benign / "
           f"{(test_df['label']==1).sum()} injected)")
 
-    tokenizer = RobertaTokenizerFast.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
 
     train_ds = PromptDataset(train_df, tokenizer, max_length=max_length)
     val_ds   = PromptDataset(val_df,   tokenizer, max_length=max_length)
@@ -207,13 +209,28 @@ def get_lodo_loaders(
     generator = torch.Generator()
     generator.manual_seed(seed)
 
+    train_sampler = None
+    shuffle_train = True
+    if balanced_sampling:
+        class_counts = train_df["label"].value_counts().to_dict()
+        sample_weights = train_df["label"].map(lambda label: 1.0 / class_counts[label]).tolist()
+        train_sampler = WeightedRandomSampler(
+            weights=torch.tensor(sample_weights, dtype=torch.double),
+            num_samples=len(sample_weights),
+            replacement=True,
+            generator=generator,
+        )
+        shuffle_train = False
+        print("  Balanced sampling: enabled")
+
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle_train,
+        sampler=train_sampler,
         drop_last=True,      # SupCon needs full batches for meaningful pairs
         num_workers=num_workers,
-        generator=generator,
+        generator=None if balanced_sampling else generator,
     )
     val_loader = DataLoader(
         val_ds,
