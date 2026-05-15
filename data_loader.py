@@ -28,7 +28,7 @@ Available held_out_source values (must match 'source' column in dataset.csv):
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
-from transformers import RobertaTokenizer
+from transformers import RobertaTokenizerFast
 
 # ---------------------------------------------------------------------------
 # Constants — change here only, not scattered through the code
@@ -38,6 +38,8 @@ MODEL_NAME  = "roberta-base"
 MAX_LENGTH  = 64   # most prompts are short; 64 cuts forward pass time ~4x vs 128
 BATCH_SIZE  = 16   # smaller batch = less memory and faster per-step on CPU
 NUM_WORKERS = 0    # keep 0 on Windows (multiprocessing deadlock)
+VAL_FRACTION = 0.10
+SEED = 42
 
 VALID_SOURCES = {"deepset", "neuralchemy", "safeguard", "toxic-chat"}
 
@@ -57,22 +59,22 @@ class PromptDataset(Dataset):
     CPU/Windows with 27K+ samples.
     """
 
-    def __init__(self, df: pd.DataFrame, tokenizer: RobertaTokenizer):
+    def __init__(self, df: pd.DataFrame, tokenizer: RobertaTokenizerFast, max_length: int = MAX_LENGTH):
         texts  = df["text"].tolist()
         labels = df["label"].tolist()
 
         print(f"  Tokenising {len(texts)} samples...", end=" ", flush=True)
         encoded = tokenizer(
             texts,
-            max_length=MAX_LENGTH,
+            max_length=max_length,
             padding="max_length",
             truncation=True,
             return_tensors="pt",
         )
         print("done")
 
-        self.input_ids      = encoded["input_ids"]       # (N, 128)
-        self.attention_mask = encoded["attention_mask"]  # (N, 128)
+        self.input_ids      = encoded["input_ids"]
+        self.attention_mask = encoded["attention_mask"]
         self.labels         = torch.tensor(labels, dtype=torch.long)
 
     def __len__(self) -> int:
@@ -111,6 +113,37 @@ def _lodo_split(df: pd.DataFrame, held_out_source: str):
     return train_df, test_df
 
 
+def _stratified_train_val_split(
+    train_pool: pd.DataFrame,
+    val_fraction: float,
+    seed: int,
+):
+    """
+    Creates a validation split only from the training sources.
+
+    Stratifying by source and label keeps validation representative without
+    leaking the held-out LODO source into model selection.
+    """
+    val_parts = []
+    train_parts = []
+
+    for _, group in train_pool.groupby(["source", "label"], sort=False):
+        if len(group) < 2:
+            train_parts.append(group)
+            continue
+
+        n_val = max(1, int(round(len(group) * val_fraction)))
+        val_group = group.sample(n=n_val, random_state=seed)
+        train_group = group.drop(val_group.index)
+
+        val_parts.append(val_group)
+        train_parts.append(train_group)
+
+    train_df = pd.concat(train_parts).sample(frac=1.0, random_state=seed).reset_index(drop=True)
+    val_df = pd.concat(val_parts).sample(frac=1.0, random_state=seed).reset_index(drop=True)
+    return train_df, val_df
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -120,9 +153,12 @@ def get_lodo_loaders(
     held_out_source: str,
     batch_size: int = BATCH_SIZE,
     num_workers: int = NUM_WORKERS,
+    max_length: int = MAX_LENGTH,
+    val_fraction: float = VAL_FRACTION,
+    seed: int = SEED,
 ):
     """
-    Returns (train_loader, test_loader) for one LODO fold.
+    Returns (train_loader, val_loader, test_loader) for one LODO fold.
 
     Args:
         csv_path:          Path to dataset.csv produced by dataset_pipeline.py
@@ -131,8 +167,9 @@ def get_lodo_loaders(
         num_workers:       DataLoader workers (default 0 = main process)
 
     Returns:
-        train_loader: shuffled, drops last incomplete batch
-        test_loader:  not shuffled, keeps all samples
+        train_loader: shuffled train split from non-held-out sources
+        val_loader:   validation split from non-held-out sources
+        test_loader:  held-out source; use once for final LODO evaluation
     """
     df = pd.read_csv(csv_path)
 
@@ -147,26 +184,42 @@ def get_lodo_loaders(
     df = df.dropna(subset=["text", "label"])
     df["label"] = df["label"].astype(int)
 
-    train_df, test_df = _lodo_split(df, held_out_source)
+    train_pool_df, test_df = _lodo_split(df, held_out_source)
+    train_df, val_df = _stratified_train_val_split(train_pool_df, val_fraction, seed)
 
     print(f"LODO fold — held out: '{held_out_source}'")
     print(f"  Train: {len(train_df)} samples  "
           f"({(train_df['label']==0).sum()} benign / "
           f"{(train_df['label']==1).sum()} injected)")
+    print(f"  Val  : {len(val_df)} samples  "
+          f"({(val_df['label']==0).sum()} benign / "
+          f"{(val_df['label']==1).sum()} injected)")
     print(f"  Test : {len(test_df)} samples  "
           f"({(test_df['label']==0).sum()} benign / "
           f"{(test_df['label']==1).sum()} injected)")
 
-    tokenizer = RobertaTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = RobertaTokenizerFast.from_pretrained(MODEL_NAME)
 
-    train_ds = PromptDataset(train_df, tokenizer)
-    test_ds  = PromptDataset(test_df,  tokenizer)
+    train_ds = PromptDataset(train_df, tokenizer, max_length=max_length)
+    val_ds   = PromptDataset(val_df,   tokenizer, max_length=max_length)
+    test_ds  = PromptDataset(test_df,  tokenizer, max_length=max_length)
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
 
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,      # SupCon needs full batches for meaningful pairs
+        num_workers=num_workers,
+        generator=generator,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
         num_workers=num_workers,
     )
     test_loader = DataLoader(
@@ -177,7 +230,7 @@ def get_lodo_loaders(
         num_workers=num_workers,
     )
 
-    return train_loader, test_loader
+    return train_loader, val_loader, test_loader
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +243,7 @@ if __name__ == "__main__":
     csv_path = sys.argv[1] if len(sys.argv) > 1 else "dataset.csv"
     source   = sys.argv[2] if len(sys.argv) > 2 else "deepset"
 
-    train_loader, test_loader = get_lodo_loaders(csv_path, source)
+    train_loader, val_loader, test_loader = get_lodo_loaders(csv_path, source)
 
     # Inspect one batch
     ids, mask, labels = next(iter(train_loader))
@@ -198,4 +251,6 @@ if __name__ == "__main__":
     print(f"  input_ids     : {ids.shape}")
     print(f"  attention_mask: {mask.shape}")
     print(f"  labels        : {labels.shape}  unique={labels.unique().tolist()}")
+    print(f"  val batches   : {len(val_loader)}")
+    print(f"  test batches  : {len(test_loader)}")
     print("\nData loader ready.")

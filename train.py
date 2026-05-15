@@ -47,13 +47,16 @@ LR_ENCODER      = 2e-5   # encoder — lower LR, pre-trained weights
 WARMUP_STEPS    = 100    # linear warmup steps for scheduler
 TEMPERATURE     = 0.07   # SupCon temperature (Khosla et al. default)
 PATIENCE        = 3      # early stopping: stop if val loss does not improve
+BATCH_SIZE      = 16
+MAX_LENGTH      = 64
+VAL_FRACTION    = 0.10
 
 
 # ---------------------------------------------------------------------------
 # Training and validation steps
 # ---------------------------------------------------------------------------
 
-def train_one_epoch(model, loader, loss_fn, optimiser, scheduler, device, epoch):
+def train_one_epoch(model, loader, loss_fn, optimiser, scheduler, device, epoch, scaler=None):
     model.train()
     total_loss = 0.0
     n_batches  = 0
@@ -64,14 +67,24 @@ def train_one_epoch(model, loader, loss_fn, optimiser, scheduler, device, epoch)
         attention_mask = attention_mask.to(device)
         labels         = labels.to(device)
 
-        optimiser.zero_grad()
-        embeddings = model(input_ids, attention_mask)
-        loss       = loss_fn(embeddings, labels)
-        loss.backward()
+        optimiser.zero_grad(set_to_none=True)
 
-        nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if scaler is not None:
+            with torch.cuda.amp.autocast():
+                embeddings = model(input_ids, attention_mask)
+                loss = loss_fn(embeddings, labels)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimiser)
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimiser)
+            scaler.update()
+        else:
+            embeddings = model(input_ids, attention_mask)
+            loss = loss_fn(embeddings, labels)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimiser.step()
 
-        optimiser.step()
         scheduler.step()
 
         total_loss += loss.item()
@@ -94,12 +107,17 @@ def validate(model, loader, loss_fn, device, epoch):
         labels         = labels.to(device)
 
         embeddings = model(input_ids, attention_mask)
-        loss       = loss_fn(embeddings, labels)
+        try:
+            loss = loss_fn(embeddings, labels)
+        except ValueError:
+            continue
 
         total_loss += loss.item()
         n_batches  += 1
         pbar.set_postfix(loss=f"{loss.item():.4f}")
 
+    if n_batches == 0:
+        raise ValueError("Validation produced no valid SupCon batches.")
     return total_loss / n_batches
 
 
@@ -107,7 +125,38 @@ def validate(model, loader, loss_fn, device, epoch):
 # Main training loop
 # ---------------------------------------------------------------------------
 
-def train(csv_path: str, held_out_source: str, output_dir: str):
+def save_checkpoint(
+    path,
+    model,
+    optimiser,
+    scheduler,
+    epoch,
+    best_val_loss,
+    patience_count,
+):
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state": model.state_dict(),
+            "optimiser_state": optimiser.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
+            "best_val_loss": best_val_loss,
+            "patience_count": patience_count,
+        },
+        path,
+    )
+
+
+def train(
+    csv_path: str,
+    held_out_source: str,
+    output_dir: str,
+    epochs: int = EPOCHS,
+    batch_size: int = BATCH_SIZE,
+    max_length: int = MAX_LENGTH,
+    val_fraction: float = VAL_FRACTION,
+    resume: bool = False,
+):
     os.makedirs(output_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -116,7 +165,13 @@ def train(csv_path: str, held_out_source: str, output_dir: str):
     print(f"Output : {output_dir}\n")
 
     # ── Data ──────────────────────────────────────────────────────────────
-    train_loader, val_loader = get_lodo_loaders(csv_path, held_out_source)
+    train_loader, val_loader, test_loader = get_lodo_loaders(
+        csv_path,
+        held_out_source,
+        batch_size=batch_size,
+        max_length=max_length,
+        val_fraction=val_fraction,
+    )
 
     # ── Model ─────────────────────────────────────────────────────────────
     model   = PromptInjectionModel(freeze_encoder=True).to(device)
@@ -130,7 +185,7 @@ def train(csv_path: str, held_out_source: str, output_dir: str):
         {"params": model.projection_head.parameters(),"lr": LR_PROJECTION},
     ])
 
-    total_steps = EPOCHS * len(train_loader)
+    total_steps = epochs * len(train_loader)
     scheduler = get_linear_schedule_with_warmup(
         optimiser,
         num_warmup_steps=WARMUP_STEPS,
@@ -138,18 +193,34 @@ def train(csv_path: str, held_out_source: str, output_dir: str):
     )
 
     # ── Logging setup ─────────────────────────────────────────────────────
-    log_path = os.path.join(output_dir, "training_log.csv")
-    with open(log_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["epoch", "train_loss", "val_loss", "encoder_frozen",
-                         "epoch_time_s", "best"])
-
     best_val_loss  = float("inf")
     patience_count = 0
     best_model_path = os.path.join(output_dir, "best_model.pt")
+    last_checkpoint_path = os.path.join(output_dir, "checkpoint_last.pt")
+    start_epoch = 1
+    scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+
+    if resume and os.path.exists(last_checkpoint_path):
+        checkpoint = torch.load(last_checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state"])
+        optimiser.load_state_dict(checkpoint["optimiser_state"])
+        scheduler.load_state_dict(checkpoint["scheduler_state"])
+        best_val_loss = checkpoint["best_val_loss"]
+        patience_count = checkpoint["patience_count"]
+        start_epoch = checkpoint["epoch"] + 1
+        if start_epoch >= 2:
+            model.unfreeze_encoder()
+        print(f"  Resumed from epoch {checkpoint['epoch']} checkpoint\n")
+
+    log_path = os.path.join(output_dir, "training_log.csv")
+    if not resume or not os.path.exists(log_path):
+        with open(log_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["epoch", "train_loss", "val_loss", "encoder_frozen",
+                             "epoch_time_s", "best"])
 
     # ── Epoch loop ────────────────────────────────────────────────────────
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(start_epoch, epochs + 1):
         t0 = time.time()
 
         # Unfreeze encoder after epoch 1
@@ -158,7 +229,7 @@ def train(csv_path: str, held_out_source: str, output_dir: str):
             model.unfreeze_encoder()
             print("  Encoder unfrozen — full model now training\n")
 
-        train_loss = train_one_epoch(model, train_loader, loss_fn, optimiser, scheduler, device, epoch)
+        train_loss = train_one_epoch(model, train_loader, loss_fn, optimiser, scheduler, device, epoch, scaler)
         val_loss   = validate(model, val_loader, loss_fn, device, epoch)
         elapsed    = time.time() - t0
         is_best    = val_loss < best_val_loss
@@ -172,7 +243,7 @@ def train(csv_path: str, held_out_source: str, output_dir: str):
             patience_count += 1
 
         print(
-            f"Epoch {epoch:02d}/{EPOCHS}  "
+            f"Epoch {epoch:02d}/{epochs}  "
             f"train={train_loss:.4f}  val={val_loss:.4f}  "
             f"{'[BEST]' if is_best else f'[patience {patience_count}/{PATIENCE}]'}  "
             f"frozen={encoder_frozen}  {elapsed:.1f}s"
@@ -184,6 +255,16 @@ def train(csv_path: str, held_out_source: str, output_dir: str):
             writer.writerow([epoch, f"{train_loss:.6f}", f"{val_loss:.6f}",
                              encoder_frozen, f"{elapsed:.1f}", is_best])
 
+        save_checkpoint(
+            last_checkpoint_path,
+            model,
+            optimiser,
+            scheduler,
+            epoch,
+            best_val_loss,
+            patience_count,
+        )
+
         # Early stopping
         if patience_count >= PATIENCE:
             print(f"\nEarly stopping — val loss did not improve for {PATIENCE} epochs.")
@@ -192,7 +273,13 @@ def train(csv_path: str, held_out_source: str, output_dir: str):
     print(f"\nTraining complete.")
     print(f"Best val loss : {best_val_loss:.4f}")
     print(f"Model saved   : {best_model_path}")
+    print(f"Resume point  : {last_checkpoint_path}")
     print(f"Log saved     : {log_path}")
+
+    if os.path.exists(best_model_path):
+        model.encoder.load_state_dict(torch.load(best_model_path, map_location=device))
+        test_loss = validate(model, test_loader, loss_fn, device, epoch)
+        print(f"Held-out test loss ({held_out_source}): {test_loss:.4f}")
 
 
 # ---------------------------------------------------------------------------
@@ -207,10 +294,25 @@ if __name__ == "__main__":
                         help="Source to hold out as test fold")
     parser.add_argument("--output",     default="results/",
                         help="Directory for best_model.pt and training_log.csv")
+    parser.add_argument("--epochs",     type=int, default=EPOCHS,
+                        help="Maximum number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
+                        help="Training and evaluation batch size")
+    parser.add_argument("--max-length", type=int, default=MAX_LENGTH,
+                        help="Tokenizer max sequence length")
+    parser.add_argument("--val-fraction", type=float, default=VAL_FRACTION,
+                        help="Validation fraction taken from non-held-out sources")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from output/checkpoint_last.pt if it exists")
     args = parser.parse_args()
 
     train(
         csv_path=args.csv,
         held_out_source=args.held_out,
         output_dir=args.output,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        max_length=args.max_length,
+        val_fraction=args.val_fraction,
+        resume=args.resume,
     )
