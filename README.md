@@ -230,6 +230,22 @@ Generate visual result graphs:
 python plot_results.py --results-dir results
 ```
 
+### Baseline comparison
+
+Run a fast TF-IDF + Logistic Regression baseline with the same LODO protocol:
+
+```bash
+python baseline_tfidf.py --csv dataset.csv --all --output results_baseline
+python summarize_results.py --results-dir results_baseline
+python plot_results.py --results-dir results_baseline
+```
+
+For one fold only:
+
+```bash
+python baseline_tfidf.py --csv dataset.csv --held-out deepset --output results_baseline/deepset
+```
+
 This writes:
 - `evaluation_metrics.json`
 - `validation_predictions.csv`
