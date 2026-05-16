@@ -34,6 +34,14 @@ from data_loader import get_lodo_loaders
 from model import PromptInjectionModel
 
 
+def first_value(*values):
+    """Return the first value that is not None, otherwise None."""
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 def load_training_config(model_dir):
     checkpoint_path = os.path.join(model_dir, "checkpoint_last.pt")
     if not os.path.exists(checkpoint_path):
@@ -134,10 +142,10 @@ def evaluate(
     os.makedirs(output_dir, exist_ok=True)
 
     config = load_training_config(model_dir)
-    model_name = model_name or config.get("model_name", "roberta-base")
-    batch_size = batch_size or config.get("batch_size", 16)
-    max_length = max_length or config.get("max_length", 64)
-    val_fraction = val_fraction or config.get("val_fraction", 0.10)
+    model_name = first_value(model_name, config.get("model_name"), "roberta-base")
+    batch_size = first_value(batch_size, config.get("batch_size"), 16)
+    max_length = first_value(max_length, config.get("max_length"), 64)
+    val_fraction = first_value(val_fraction, config.get("val_fraction"), 0.10)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n=== Evaluation - held out: '{held_out_source}' ===")
