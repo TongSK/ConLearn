@@ -88,12 +88,27 @@ def score_with_centroids(embeddings, centroids):
     return (similarities[:, 1] - similarities[:, 0]).numpy()
 
 
-def choose_threshold(labels, scores):
+def choose_threshold(labels, scores, strategy="f1", target_precision=0.90, target_recall=0.90):
     precision, recall, thresholds = precision_recall_curve(labels, scores)
     if len(thresholds) == 0:
         return 0.0
 
-    f1_values = 2 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-12)
+    precision = precision[:-1]
+    recall = recall[:-1]
+
+    if strategy == "precision":
+        valid = np.where(precision >= target_precision)[0]
+        if len(valid) > 0:
+            best_idx = valid[int(np.argmax(recall[valid]))]
+            return float(thresholds[best_idx])
+
+    if strategy == "recall":
+        valid = np.where(recall >= target_recall)[0]
+        if len(valid) > 0:
+            best_idx = valid[int(np.argmax(precision[valid]))]
+            return float(thresholds[best_idx])
+
+    f1_values = 2 * precision * recall / (precision + recall + 1e-12)
     best_idx = int(np.argmax(f1_values))
     return float(thresholds[best_idx])
 
@@ -137,6 +152,9 @@ def evaluate(
     batch_size=None,
     max_length=None,
     val_fraction=None,
+    threshold_strategy="f1",
+    target_precision=0.90,
+    target_recall=0.90,
 ):
     output_dir = output_dir or model_dir
     os.makedirs(output_dir, exist_ok=True)
@@ -183,7 +201,13 @@ def evaluate(
     val_labels_np = val_labels.numpy()
     test_labels_np = test_labels.numpy()
 
-    threshold = choose_threshold(val_labels_np, val_scores)
+    threshold = choose_threshold(
+        val_labels_np,
+        val_scores,
+        strategy=threshold_strategy,
+        target_precision=target_precision,
+        target_recall=target_recall,
+    )
     val_metrics, val_predictions = compute_metrics(val_labels_np, val_scores, threshold)
     test_metrics, test_predictions = compute_metrics(test_labels_np, test_scores, threshold)
 
@@ -191,7 +215,9 @@ def evaluate(
         "held_out_source": held_out_source,
         "model_dir": model_dir,
         "model_name": model_name,
-        "threshold_source": "validation_f1",
+        "threshold_source": f"validation_{threshold_strategy}",
+        "target_precision": target_precision if threshold_strategy == "precision" else None,
+        "target_recall": target_recall if threshold_strategy == "recall" else None,
         "validation": val_metrics,
         "test": test_metrics,
     }
@@ -232,6 +258,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--max-length", type=int, default=None)
     parser.add_argument("--val-fraction", type=float, default=None)
+    parser.add_argument("--threshold-strategy", choices=["f1", "precision", "recall"], default="f1")
+    parser.add_argument("--target-precision", type=float, default=0.90)
+    parser.add_argument("--target-recall", type=float, default=0.90)
     args = parser.parse_args()
 
     evaluate(
@@ -243,4 +272,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         max_length=args.max_length,
         val_fraction=args.val_fraction,
+        threshold_strategy=args.threshold_strategy,
+        target_precision=args.target_precision,
+        target_recall=args.target_recall,
     )
