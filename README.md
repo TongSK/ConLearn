@@ -224,12 +224,24 @@ Summarise all evaluated folds:
 python summarize_results.py --results-dir results
 ```
 
+Generate visual result graphs:
+
+```bash
+python plot_results.py --results-dir results
+```
+
 This writes:
 - `evaluation_metrics.json`
 - `validation_predictions.csv`
 - `test_predictions.csv`
 - `results/lodo_summary.csv`
 - `results/lodo_summary.md`
+- `results/plots/lodo_metrics_bar.png`
+- `results/plots/precision_recall_f1.png`
+- `results/plots/auc_comparison.png`
+- `results/plots/confusion_matrices.png`
+- `results/plots/roc_curves.png`
+- `results/plots/precision_recall_curves.png`
 
 The evaluator builds benign/injected centroids from the non-held-out training
 split, chooses the decision threshold on the internal validation split, and
