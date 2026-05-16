@@ -194,6 +194,23 @@ python train.py --csv dataset.csv --held-out deepset --output results/deepset/ \
   --freeze-encoder-layers 6 --balanced-sampling --resume
 ```
 
+### Evaluate a trained fold
+
+After training, evaluate the held-out LODO fold:
+
+```bash
+python evaluate.py --csv dataset.csv --held-out deepset --model-dir results/deepset
+```
+
+This writes:
+- `evaluation_metrics.json`
+- `validation_predictions.csv`
+- `test_predictions.csv`
+
+The evaluator builds benign/injected centroids from the non-held-out training
+split, chooses the decision threshold on the internal validation split, and
+reports final metrics on the held-out source only.
+
 ---
 
 ## Training Output
