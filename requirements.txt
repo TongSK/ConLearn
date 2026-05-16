@@ -4,3 +4,4 @@ datasets
 pandas
 tqdm
 scikit-learn
+matplotlib
