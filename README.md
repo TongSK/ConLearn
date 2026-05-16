@@ -202,10 +202,34 @@ After training, evaluate the held-out LODO fold:
 python evaluate.py --csv dataset.csv --held-out deepset --model-dir results/deepset
 ```
 
+Alternative threshold strategies:
+
+```bash
+# Choose threshold that maximises validation F1
+python evaluate.py --csv dataset.csv --held-out deepset --model-dir results/deepset \
+  --threshold-strategy f1
+
+# Choose highest-recall threshold that keeps validation precision >= 0.90
+python evaluate.py --csv dataset.csv --held-out deepset --model-dir results/deepset \
+  --threshold-strategy precision --target-precision 0.90
+
+# Choose highest-precision threshold that keeps validation recall >= 0.90
+python evaluate.py --csv dataset.csv --held-out deepset --model-dir results/deepset \
+  --threshold-strategy recall --target-recall 0.90
+```
+
+Summarise all evaluated folds:
+
+```bash
+python summarize_results.py --results-dir results
+```
+
 This writes:
 - `evaluation_metrics.json`
 - `validation_predictions.csv`
 - `test_predictions.csv`
+- `results/lodo_summary.csv`
+- `results/lodo_summary.md`
 
 The evaluator builds benign/injected centroids from the non-held-out training
 split, chooses the decision threshold on the internal validation split, and
