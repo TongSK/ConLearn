@@ -36,7 +36,7 @@ def flatten_report(report):
     cm = test["confusion_matrix"]
     row = {
         "held_out_source": report["held_out_source"],
-        "model_name": report.get("model_name", ""),
+        "model_name": report.get("model_name", report.get("model_type", "")),
         "threshold_source": report.get("threshold_source", ""),
         "threshold": test.get("threshold"),
     }
