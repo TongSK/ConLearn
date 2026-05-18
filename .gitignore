@@ -1,5 +1,7 @@
-dataset.csv
+data/dataset.csv
 results/
+results_baseline/
+artifacts/*.pt
 *.pt
 __pycache__/
 venv/
