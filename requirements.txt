@@ -5,3 +5,5 @@ pandas
 tqdm
 scikit-learn
 matplotlib
+fastapi
+uvicorn
