@@ -278,6 +278,18 @@ Open:
 http://localhost:8000
 ```
 
+For a simpler ML demo interface, run the Gradio app:
+
+```bash
+python src/gradio_app.py --artifact artifacts/detector_artifact.pt
+```
+
+To create a temporary public Gradio link:
+
+```bash
+python src/gradio_app.py --artifact artifacts/detector_artifact.pt --share
+```
+
 API endpoint:
 
 ```bash
