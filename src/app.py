@@ -453,7 +453,7 @@ HTML_PAGE = """
 
           <section class="card">
             <div class="card-header">
-              <h2 class="card-title">Analysis Telemetry</h2>
+              <h2 class="card-title">Verdict</h2>
               <select id="sensitivity" title="Sensitivity">
                 <option value="balanced" selected>Balanced</option>
                 <option value="strict">Strict</option>
@@ -462,7 +462,11 @@ HTML_PAGE = """
               </select>
             </div>
             <div class="card-body">
-              <p id="resolution" class="telemetry-status">Standby</p>
+              <div class="verdict">
+                <div id="verdictText" class="verdict-text safe">STANDBY</div>
+                <div class="confidence-line"><div id="confidenceFill" class="confidence-fill"></div></div>
+                <div class="confidence-meta"><span id="verdictLabel">Awaiting scan</span><span id="confidenceValue">0%</span></div>
+              </div>
               <div class="telemetry-grid">
                 <div class="metric">
                   <div class="metric-label">Latent Distance</div>
@@ -473,6 +477,7 @@ HTML_PAGE = """
                   <div id="latency" class="metric-value">-- ms</div>
                 </div>
               </div>
+              <p id="resolution" class="telemetry-status">Standby</p>
               <p id="reason" class="reason">No prompt has been analysed.</p>
             </div>
           </section>
@@ -492,19 +497,6 @@ HTML_PAGE = """
               <span><i class="swatch payload"></i>Current Payload</span>
             </div>
             <canvas id="vectorMap" width="980" height="390"></canvas>
-          </div>
-        </section>
-
-        <section class="card">
-          <div class="card-header">
-            <h2 class="card-title">Verdict</h2>
-          </div>
-          <div class="card-body">
-            <div class="verdict">
-              <div id="verdictText" class="verdict-text safe">STANDBY</div>
-              <div class="confidence-line"><div id="confidenceFill" class="confidence-fill"></div></div>
-              <div class="confidence-meta"><span id="verdictLabel">Awaiting scan</span><span id="confidenceValue">0%</span></div>
-            </div>
           </div>
         </section>
 
@@ -594,14 +586,31 @@ HTML_PAGE = """
     }
 
     function titleCase(value) {
-      return value.replaceAll("_", " ").replace(/\\b\\w/g, char => char.toUpperCase());
+      return String(value || "").replaceAll("_", " ").replace(/\\b\\w/g, char => char.toUpperCase());
+    }
+
+    function numberOr(value, fallback = 0) {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? numeric : fallback;
+    }
+
+    function signed(value) {
+      const numeric = numberOr(value);
+      return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(4)}`;
     }
 
     function updateVerdict(result) {
-      const isAttack = result.is_prompt_injection;
-      const confidence = isAttack ? result.risk_probability : 1 - result.risk_probability;
+      result = result || {};
+      const isAttack = Boolean(result.is_prompt_injection);
+      const riskProbability = numberOr(result.risk_probability);
+      const confidence = isAttack ? riskProbability : 1 - riskProbability;
       const confidencePct = Math.max(0, Math.min(100, confidence * 100));
       const label = isAttack ? "MALICIOUS" : "SAFE";
+      const action = result.action || (isAttack ? "review" : "allow");
+      const scoreValue = numberOr(result.score);
+      const thresholdValue = numberOr(result.threshold);
+      const benignSimilarity = numberOr(result.benign_similarity);
+      const injectedSimilarity = numberOr(result.injected_similarity);
 
       verdictText.textContent = label;
       verdictText.className = "verdict-text " + (isAttack ? "danger" : "safe");
@@ -609,21 +618,22 @@ HTML_PAGE = """
       confidenceValue.textContent = confidencePct.toFixed(1) + "%";
       confidenceFill.style.width = confidencePct + "%";
       confidenceFill.style.background = isAttack ? "#ff4d55" : "#6d5dfc";
-      resolution.textContent = isAttack ? titleCase(result.action) : "Safe";
-      distance.textContent = Math.abs(result.score - result.threshold).toFixed(3);
-      reason.textContent = result.reason;
+      resolution.textContent = isAttack ? titleCase(action) : "Safe";
+      distance.textContent = Math.abs(scoreValue - thresholdValue).toFixed(3);
+      reason.textContent = result.reason || "No decision explanation returned.";
 
-      const signalText = result.matched_signals.length ? result.matched_signals.map(titleCase).join(", ") : "None";
+      const matchedSignals = Array.isArray(result.matched_signals) ? result.matched_signals : [];
+      const signalText = matchedSignals.length ? matchedSignals.map(titleCase).join(", ") : "None";
       breakdown.textContent =
-        `Similarity to benign centroid   : ${result.benign_similarity >= 0 ? "+" : ""}${result.benign_similarity.toFixed(4)}\\n` +
-        `Similarity to injected centroid : ${result.injected_similarity >= 0 ? "+" : ""}${result.injected_similarity.toFixed(4)}\\n` +
-        `Decision score                  : ${result.score >= 0 ? "+" : ""}${result.score.toFixed(4)}\\n` +
-        `Threshold                       : ${result.threshold >= 0 ? "+" : ""}${result.threshold.toFixed(4)}\\n` +
+        `Similarity to benign centroid   : ${signed(benignSimilarity)}\\n` +
+        `Similarity to injected centroid : ${signed(injectedSimilarity)}\\n` +
+        `Decision score                  : ${signed(scoreValue)}\\n` +
+        `Threshold                       : ${signed(thresholdValue)}\\n` +
         `Confidence score                : ${confidencePct.toFixed(1)}%\\n` +
         `Matched signal                  : ${signalText}`;
 
-      const mapX = Math.max(0.04, Math.min(0.96, 0.18 + result.risk_probability * 0.68));
-      const mapY = Math.max(0.04, Math.min(0.96, 0.78 - result.risk_probability * 0.58));
+      const mapX = Math.max(0.04, Math.min(0.96, 0.18 + riskProbability * 0.68));
+      const mapY = Math.max(0.04, Math.min(0.96, 0.78 - riskProbability * 0.58));
       currentPoint = { x: mapX, y: mapY };
       drawMap();
     }
