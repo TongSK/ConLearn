@@ -136,6 +136,13 @@ HTML_PAGE = r"""<!doctype html>
       color: var(--muted);
       margin-bottom: 14px;
     }
+    .card-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+      margin: -4px 0 16px;
+      max-width: 720px;
+    }
 
     /* ── input area ── */
     .input-wrap {
@@ -488,7 +495,8 @@ HTML_PAGE = r"""<!doctype html>
 
   <!-- similarity breakdown -->
   <div class="card">
-    <div class="card-label">Similarity to class centroids</div>
+    <div class="card-label">Model explanation</div>
+    <p class="card-note">The detector compares the prompt embedding with benign and injected class centroids. Higher injected similarity means the prompt is closer to known prompt-injection behaviour. This is a technical explanation for the model decision, not a general harmful-content moderation score.</p>
     <div class="sim-grid">
       <div class="sim-block">
         <div class="sim-label"><span class="sim-dot benign"></span>Benign centroid</div>
@@ -536,9 +544,14 @@ HTML_PAGE = r"""<!doctype html>
       <div class="how-step">
         <div class="how-num">03 — Classify</div>
         <div class="how-title">Confidence score</div>
-        <div class="how-body">The similarity gap between centroids is converted to a 0–100% confidence score via softmax. A validation-tuned threshold sets the decision boundary.</div>
+        <div class="how-body">The similarity gap between centroids is converted to a confidence-style risk score. A validation-tuned threshold sets the decision boundary.</div>
       </div>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Scope note</div>
+    <p class="card-note" style="margin-bottom:0">This prototype is designed to detect prompt injection attempts such as instruction override, system prompt extraction, data exfiltration, and tool-abuse prompts. It is not intended to replace a full harmful-content, toxicity, or jailbreak moderation system.</p>
   </div>
 </main>
 

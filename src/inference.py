@@ -80,6 +80,8 @@ class PromptInjectionDetector:
         embedding = self.model.get_embeddings(input_ids, attention_mask)
         embedding = F.normalize(embedding, p=2, dim=1)
         similarities = embedding @ self.centroids.T
+        benign_similarity = float(similarities[:, 0].item())
+        injected_similarity = float(similarities[:, 1].item())
         score = float((similarities[:, 1] - similarities[:, 0]).item())
 
         model_margin = score - adjusted_threshold
@@ -111,6 +113,8 @@ class PromptInjectionDetector:
             "label": "prompt_injection" if is_injected else "benign",
             "is_prompt_injection": bool(is_injected),
             "score": score,
+            "benign_similarity": benign_similarity,
+            "injected_similarity": injected_similarity,
             "threshold": adjusted_threshold,
             "base_threshold": self.threshold,
             "risk_probability": risk_probability,
