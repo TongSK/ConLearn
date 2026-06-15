@@ -531,7 +531,7 @@ HTML_PAGE = r"""<!doctype html>
         <section class="result-panel idle" id="resultPanel">
           <div class="result-head">
             <h2>Classification Result</h2>
-            <div class="probability" id="probability">p =<br/>--</div>
+            <div class="probability" id="probability">risk =<br/>--</div>
           </div>
           <div class="result-body">
             <div class="result-label">Verdict</div>
@@ -541,7 +541,7 @@ HTML_PAGE = r"""<!doctype html>
           <div class="result-meta">
             <div><span>Inference Latency</span><strong id="latency">--</strong></div>
             <div><span>Token Estimate</span><strong id="tokenCount">--</strong></div>
-            <div><span>Matched Signals</span><strong id="matchedSignals">--</strong></div>
+            <div><span>Decision Margin</span><strong id="decisionMargin">--</strong></div>
           </div>
         </section>
 
@@ -609,10 +609,10 @@ HTML_PAGE = r"""<!doctype html>
 
     function resetResult() {
       $("resultPanel").className = "result-panel idle";
-      $("probability").innerHTML = "p =<br/>--";
+      $("probability").innerHTML = "risk =<br/>--";
       $("verdict").textContent = "Awaiting";
       $("resultReason").textContent = "Run the analysis to classify the prompt and inspect its relationship to the learned class centroids.";
-      ["latency", "tokenCount", "matchedSignals", "tableBenign", "tableInjected", "tableBenignMatch", "tableInjectedMatch"].forEach(id => $(id).textContent = "--");
+      ["latency", "tokenCount", "decisionMargin", "tableBenign", "tableInjected", "tableBenignMatch", "tableInjectedMatch"].forEach(id => $(id).textContent = "--");
       $("riskDistance").textContent = "Similarity: --";
       $("safeDistance").textContent = "Similarity: --";
       $("riskBar").style.width = "0%";
@@ -621,22 +621,21 @@ HTML_PAGE = r"""<!doctype html>
 
     function renderResult(data, elapsed, text) {
       const attack = Boolean(data.is_prompt_injection);
-      const riskProbability = Number(data.risk_probability) || 0;
-      const confidence = attack ? riskProbability : 1 - riskProbability;
+      const riskScore = Number(data.risk_score) || 0;
       const benign = Number(data.benign_similarity) || 0;
       const injected = Number(data.injected_similarity) || 0;
       const benignMatch = similarityPercent(benign);
       const injectedMatch = similarityPercent(injected);
 
       $("resultPanel").className = "result-panel" + (attack ? "" : " safe");
-      $("probability").innerHTML = "p =<br/>" + confidence.toFixed(3);
+      $("probability").innerHTML = "risk =<br/>" + riskScore.toFixed(3);
       $("verdict").textContent = attack ? "Malicious" : "Benign";
       $("resultReason").textContent = data.reason || (attack
         ? "Input aligns with learned adversarial prompt-injection behaviour."
         : "Input aligns more closely with the learned benign prompt class.");
       $("latency").textContent = elapsed + " ms";
       $("tokenCount").textContent = String(Math.max(1, Math.round(text.length / 4)));
-      $("matchedSignals").textContent = String(Array.isArray(data.matched_signals) ? data.matched_signals.length : 0);
+      $("decisionMargin").textContent = signed(data.decision_margin);
 
       $("tableBenign").textContent = signed(benign);
       $("tableInjected").textContent = signed(injected);

@@ -9,7 +9,8 @@ Training strategy:
   Epoch 2+    : encoder unfrozen — full model fine-tunes at lower LR
 
 Outputs:
-  best_model.pt      — encoder weights at lowest validation loss
+  best_model.pt      — encoder-only legacy checkpoint
+  checkpoint_best.pt — full model weights at lowest validation loss
   training_log.csv   — loss per epoch (use for thesis learning curves)
 
 Usage:
@@ -225,6 +226,8 @@ def train(
         "freeze_encoder_epochs": freeze_encoder_epochs,
         "freeze_encoder_layers": freeze_encoder_layers,
         "balanced_sampling": balanced_sampling,
+        "projection_dim": 128,
+        "temperature": TEMPERATURE,
     }
 
     if resume and os.path.exists(last_checkpoint_path):
@@ -264,7 +267,8 @@ def train(
         if is_best:
             best_val_loss = val_loss
             patience_count = 0
-            # Save encoder weights only — projection head is discarded at inference
+            # Keep encoder-only weights for compatibility. Evaluation and
+            # deployment load the full best checkpoint below.
             torch.save(model.encoder.state_dict(), best_model_path)
             torch.save(model.state_dict(), best_checkpoint_path)
         else:

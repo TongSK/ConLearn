@@ -53,6 +53,7 @@ def load_training_config(model_dir):
 
 @torch.no_grad()
 def collect_embeddings(model, loader, device, desc):
+    """Collect L2-normalised embeddings from the trained projection space."""
     model.eval()
     embeddings = []
     labels = []
@@ -61,7 +62,7 @@ def collect_embeddings(model, loader, device, desc):
         input_ids = input_ids.to(device)
         attention_mask = attention_mask.to(device)
 
-        batch_embeddings = model.get_embeddings(input_ids, attention_mask)
+        batch_embeddings = model(input_ids, attention_mask)
         embeddings.append(batch_embeddings.cpu())
         labels.append(batch_labels.cpu())
 
@@ -182,12 +183,19 @@ def evaluate(
         balanced_sampling=False,
     )
 
-    model = PromptInjectionModel(encoder_name=model_name, freeze_encoder=False).to(device)
-    encoder_path = os.path.join(model_dir, "best_model.pt")
-    if not os.path.exists(encoder_path):
-        raise FileNotFoundError(f"Missing trained encoder: {encoder_path}")
-
-    model.encoder.load_state_dict(torch.load(encoder_path, map_location=device))
+    projection_dim = int(config.get("projection_dim", 128))
+    model = PromptInjectionModel(
+        encoder_name=model_name,
+        projection_dim=projection_dim,
+        freeze_encoder=False,
+    ).to(device)
+    checkpoint_path = os.path.join(model_dir, "checkpoint_best.pt")
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(
+            f"Missing full trained model: {checkpoint_path}. "
+            "Projection-space evaluation requires checkpoint_best.pt."
+        )
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
 
     train_embeddings, train_labels = collect_embeddings(model, train_loader, device, "Embedding train")
     val_embeddings, val_labels = collect_embeddings(model, val_loader, device, "Embedding val")
@@ -215,6 +223,16 @@ def evaluate(
         "held_out_source": held_out_source,
         "model_dir": model_dir,
         "model_name": model_name,
+        "embedding_space": "projection",
+        "projection_dim": projection_dim,
+        "split_protocol": {
+            "name": "shared_lodo_internal_validation",
+            "held_out_source": held_out_source,
+            "val_fraction": val_fraction,
+            "train_samples": len(train_loader.dataset),
+            "validation_samples": len(val_loader.dataset),
+            "test_samples": len(test_loader.dataset),
+        },
         "threshold_source": f"validation_{threshold_strategy}",
         "target_precision": target_precision if threshold_strategy == "precision" else None,
         "target_recall": target_recall if threshold_strategy == "recall" else None,

@@ -11,8 +11,8 @@ Training flow:
        → projection head → L2-normalised embedding (128-dim)
        → SupConLoss
 
-Inference flow (projection head discarded):
-  text → tokeniser → encoder → [CLS] embedding (768-dim)
+Inference flow:
+  text → tokeniser → encoder → projection head (128-dim)
        → cosine similarity against class centroids → label
 
 Usage:
@@ -40,7 +40,7 @@ class PromptInjectionModel(nn.Module):
     Transformer encoder with a two-layer projection head.
 
     forward() returns L2-normalised 128-dim embeddings — ready for SupConLoss.
-    get_embeddings() returns raw 768-dim [CLS] embeddings — used at inference.
+    get_embeddings() returns raw 768-dim [CLS] embeddings for analysis only.
     """
 
     def __init__(
@@ -93,7 +93,8 @@ class PromptInjectionModel(nn.Module):
         """
         Returns raw [CLS] embeddings from encoder (no projection head).
         Shape: (batch_size, 768)
-        Used at inference time.
+        Not used for centroid classification because SupConLoss directly
+        optimises the projected representation space.
         """
         return self._encode(input_ids, attention_mask)
 

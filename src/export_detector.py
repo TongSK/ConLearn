@@ -62,11 +62,19 @@ def export_detector(
         balanced_sampling=False,
     )
 
-    model = PromptInjectionModel(encoder_name=model_name, freeze_encoder=False).to(device)
-    encoder_path = os.path.join(model_dir, "best_model.pt")
-    if not os.path.exists(encoder_path):
-        raise FileNotFoundError(f"Missing trained encoder: {encoder_path}")
-    model.encoder.load_state_dict(torch.load(encoder_path, map_location=device))
+    projection_dim = int(config.get("projection_dim", 128))
+    model = PromptInjectionModel(
+        encoder_name=model_name,
+        projection_dim=projection_dim,
+        freeze_encoder=False,
+    ).to(device)
+    checkpoint_path = os.path.join(model_dir, "checkpoint_best.pt")
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(
+            f"Missing full trained model: {checkpoint_path}. "
+            "Projection-space export requires checkpoint_best.pt."
+        )
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
 
     train_embeddings, train_labels = collect_embeddings(model, train_loader, device, "Embedding train")
     val_embeddings, val_labels = collect_embeddings(model, val_loader, device, "Embedding val")
@@ -80,7 +88,9 @@ def export_detector(
         "max_length": max_length,
         "threshold": float(threshold),
         "held_out_source": held_out_source,
-        "encoder_state_dict": model.encoder.state_dict(),
+        "embedding_space": "projection",
+        "projection_dim": projection_dim,
+        "model_state_dict": model.state_dict(),
         "centroids": centroids.cpu(),
         "labels": {0: "benign", 1: "prompt_injection"},
     }

@@ -16,6 +16,7 @@ Run all folds:
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 
@@ -151,11 +152,27 @@ def evaluate_fold(
     val_metrics, val_predictions = compute_metrics(val_labels, val_scores, threshold)
     test_metrics, test_predictions = compute_metrics(test_labels, test_scores, threshold)
 
+    with open(csv_path, "rb") as dataset_file:
+        dataset_sha256 = hashlib.sha256(dataset_file.read()).hexdigest()
+
     report = {
         "held_out_source": held_out_source,
         "model_type": "tfidf_logistic_regression",
         "threshold_source": "validation_f1",
         "max_features": max_features,
+        "split_protocol": {
+            "name": "shared_lodo_internal_validation",
+            "helpers": [
+                "data_loader._lodo_split",
+                "data_loader._stratified_train_val_split",
+            ],
+            "seed": seed,
+            "val_fraction": val_fraction,
+            "dataset_sha256": dataset_sha256,
+            "train_samples": len(train_df),
+            "validation_samples": len(val_df),
+            "test_samples": len(test_df),
+        },
         "validation": val_metrics,
         "test": test_metrics,
     }

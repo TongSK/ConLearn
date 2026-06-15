@@ -104,7 +104,12 @@ Supervised Contrastive Loss (SupCon, Khosla et al. 2020)
 - **Loss:** Supervised Contrastive Loss (temperature = 0.07)
 - **Optimiser:** AdamW with linear warmup + linear decay scheduler
 - **Early stopping:** patience = 3 epochs on validation loss
-- **Checkpoint:** best encoder weights saved by validation loss
+- **Checkpoint:** full encoder + projection-head weights saved by validation loss
+
+Evaluation and deployed inference both operate in the trained 128-dimensional
+projection space. Class centroids are built from `model.forward()` outputs,
+not raw 768-dimensional CLS embeddings. This keeps centroid scoring aligned
+with the representation directly optimised by SupConLoss.
 
 ### LODO Evaluation
 
@@ -278,18 +283,6 @@ Open:
 http://localhost:8000
 ```
 
-For a simpler ML demo interface, run the Gradio app:
-
-```bash
-python src/gradio_app.py --artifact artifacts/detector_artifact.pt
-```
-
-To create a temporary public Gradio link:
-
-```bash
-python src/gradio_app.py --artifact artifacts/detector_artifact.pt --share
-```
-
 API endpoint:
 
 ```bash
@@ -326,6 +319,38 @@ This writes:
 The evaluator builds benign/injected centroids from the non-held-out training
 split, chooses the decision threshold on the internal validation split, and
 reports final metrics on the held-out source only.
+
+The TF-IDF baseline imports the same `_lodo_split` and
+`_stratified_train_val_split` helpers from `data_loader.py`. Each baseline
+report records the split seed, validation fraction, sample counts, and dataset
+SHA-256 hash so identical LODO partitions can be verified.
+
+The deployed detector uses the same projection-space centroid score and
+validation-tuned threshold as evaluation. It does not combine model scores
+with hand-written rules. The displayed centroid-softmax risk score is an
+uncalibrated relative score, not a probability.
+
+### Projection-space migration
+
+Results and detector artifacts produced before the projection-space correction
+are not comparable with the corrected pipeline. Retraining is not required
+when `checkpoint_best.pt` is available, but every fold must be re-evaluated
+and the deployed artifact must be re-exported:
+
+```bash
+python src/evaluate.py --held-out deepset --model-dir results/deepset
+python src/evaluate.py --held-out neuralchemy --model-dir results/neuralchemy
+python src/evaluate.py --held-out safeguard --model-dir results/safeguard
+python src/evaluate.py --held-out toxic-chat --model-dir results/toxic-chat
+
+python src/summarize_results.py --results-dir results
+python src/plot_results.py --results-dir results
+
+python src/export_detector.py --held-out safeguard --model-dir results/safeguard --output artifacts/detector_artifact.pt
+```
+
+The runtime rejects old CLS-space artifacts so they cannot be silently mixed
+with the corrected projection-space evaluation.
 
 ---
 
@@ -376,6 +401,12 @@ Fomin (2026) demonstrated that detectors evaluated on the same dataset family as
 
 **Why freeze the encoder in epoch 1?**
 RoBERTa's pre-trained weights are not suited for contrastive learning out-of-the-box. Warming up the projection head first for one epoch before unfreezing the encoder prevents the encoder's representations from collapsing during the initial noisy gradient updates.
+
+**Current limitation: no text augmentation**
+The current training pipeline does not generate paraphrases, back-translations,
+or other augmented positive views. SupConLoss can benefit from semantically
+equivalent augmented views, particularly for robustness to rephrased attacks.
+This is acknowledged as a limitation and a clear direction for future work.
 
 ---
 
